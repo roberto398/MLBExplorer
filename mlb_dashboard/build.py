@@ -34,6 +34,7 @@ from .mlb_api import fetch_schedule, fetch_team_rosters_for_schedule
 from .metrics import add_metric_flags, apply_year_weights, likely_starter_scores
 from .odds_service import PropsBoardPayload, load_live_props_board
 from .rotowire_lineups import fetch_rotowire_lineups, resolve_rotowire_lineups
+from .stolen_bases import build_stolen_base_artifacts, write_stolen_base_artifacts
 from .twitter_exports import write_full_slate_twitter_exports
 
 try:
@@ -2975,6 +2976,22 @@ def run_build(
                 write_props_odds_snapshot(context.config, props_payload.raw_rows)
         except Exception as exc:  # pragma: no cover
             warnings.warn(f"Unable to capture live odds during build for {context.target_date.isoformat()}: {exc}")
+    stolen_base_start = datetime.now(UTC)
+    try:
+        stolen_base_artifacts = build_stolen_base_artifacts(
+            context.config,
+            context.target_date,
+            schedule,
+            rosters_frame,
+            prepared.hitter_metrics,
+            prepared.raw_statcast,
+            rotowire_lineups,
+        )
+        write_stolen_base_artifacts(context.config, context.target_date, stolen_base_artifacts)
+    except Exception as exc:  # pragma: no cover
+        warnings.warn(f"Unable to write stolen-base artifacts for {context.target_date.isoformat()}: {exc}")
+    timings["stolen_base_artifacts"] = _elapsed_seconds(stolen_base_start)
+    print(f"[timing] stolen_base_artifacts={timings['stolen_base_artifacts']:.2f}s", flush=True)
     _progress("build hitter and pitcher snapshots", 4, 8, build_start)
     snapshots = _build_hitter_tracking_snapshots(
         context.target_date,

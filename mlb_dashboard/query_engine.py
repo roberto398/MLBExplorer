@@ -126,6 +126,32 @@ class StatcastQueryEngine:
             frame = frame.groupby("pitcher_id", group_keys=False).head(n_starts)
         return frame.reset_index(drop=True)
 
+    def load_pitcher_start_outcomes_for_projections(
+        self,
+        target_date: date,
+        pitcher_ids: list[int],
+        n_starts: int = 30,
+    ) -> pd.DataFrame:
+        daily_path = self.config.daily_dir / target_date.isoformat() / "strikeouts" / "pitcher_start_outcomes.parquet"
+        reusable_path = self.config.reusable_dir / "pitcher_start_outcomes.parquet"
+        if daily_path.exists():
+            return pd.read_parquet(daily_path)
+        if not reusable_path.exists():
+            return pd.DataFrame()
+        frame = pd.read_parquet(reusable_path)
+        if frame.empty or "pitcher_id" not in frame.columns:
+            return pd.DataFrame()
+        frame["pitcher_id"] = pd.to_numeric(frame["pitcher_id"], errors="coerce")
+        frame["game_date"] = pd.to_datetime(frame.get("game_date"), errors="coerce")
+        frame = frame.loc[
+            frame["pitcher_id"].isin(pitcher_ids)
+            & frame["game_date"].dt.date.lt(target_date)
+        ].copy()
+        if frame.empty:
+            return frame
+        frame = frame.sort_values(["pitcher_id", "game_date", "game_pk"], ascending=[True, False, False], na_position="last")
+        return frame.groupby("pitcher_id", group_keys=False).head(n_starts).reset_index(drop=True)
+
     def load_daily_top_slate_hitters(self, target_date: date) -> pd.DataFrame:
         path = self.config.daily_dir / target_date.isoformat() / "top_slate_hitters.parquet"
         if not path.exists():

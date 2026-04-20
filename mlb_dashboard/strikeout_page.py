@@ -113,7 +113,9 @@ def _load_all_data(
         engine = StatcastQueryEngine(config)
         filters = QueryFilters(split=split, recent_window=recent_window, weighted_mode=weighted_mode)
         pitcher_metrics = engine.get_pitcher_cards(list(pitcher_ids), filters) if pitcher_ids else pd.DataFrame()
-        outcomes = engine.load_pitcher_game_outcomes_for_projections(list(pitcher_ids), n_starts=30)
+        outcomes = engine.load_pitcher_start_outcomes_for_projections(target_date, list(pitcher_ids), n_starts=30)
+        if outcomes.empty:
+            outcomes = engine.load_pitcher_game_outcomes_for_projections(list(pitcher_ids), n_starts=30)
         pitcher_fzc = engine.load_daily_pitcher_family_zone_context(target_date)
         batter_fzp = engine.load_daily_batter_family_zone_profiles(target_date)
         hitters_by_team: dict[str, list] = {}
@@ -122,7 +124,7 @@ def _load_all_data(
             hitters_by_team[team] = pool.to_dict("records") if not pool.empty else []
     else:
         # Hosted: load everything from remote parquet files; no DuckDB available.
-        # Game outcomes are not hosted — projection falls back to proxy stats (confidence: Low).
+        # Pitcher start outcomes are loaded from the compact daily Strikeouts artifact when published.
         raw_pitchers = _load_remote_daily_parquet(base_url, target_date, "top_slate_pitchers.parquet")
         if not raw_pitchers.empty and "split_key" in raw_pitchers.columns:
             raw_pitchers = raw_pitchers.loc[
@@ -134,7 +136,9 @@ def _load_all_data(
             raw_pitchers = raw_pitchers.loc[raw_pitchers["pitcher_id"].isin(pitcher_ids)]
         pitcher_metrics = raw_pitchers
 
-        outcomes = pd.DataFrame()  # not available on hosted; proxy fallback used
+        outcomes = _load_remote_daily_parquet(base_url, target_date, "strikeouts/pitcher_start_outcomes.parquet")
+        if pitcher_ids and not outcomes.empty and "pitcher_id" in outcomes.columns:
+            outcomes = outcomes.loc[pd.to_numeric(outcomes["pitcher_id"], errors="coerce").isin(pitcher_ids)].copy()
 
         pitcher_fzc = _load_remote_daily_parquet(base_url, target_date, "daily_pitcher_family_zone_context.parquet")
         batter_fzp = _load_remote_daily_parquet(base_url, target_date, "daily_batter_family_zone_profiles.parquet")

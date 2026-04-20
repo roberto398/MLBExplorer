@@ -585,6 +585,140 @@ def _aggregate_hitter_metrics(frame: pd.DataFrame, weighted_mode: str, year_weig
     return pd.DataFrame(rows)
 
 
+PITCHER_START_OUTCOME_COLUMNS = [
+    "slate_date",
+    "game_date",
+    "game_year",
+    "game_pk",
+    "team",
+    "pitcher_id",
+    "pitcher_name",
+    "started",
+    "batters_faced",
+    "pitch_count",
+    "strikeouts",
+    "walks",
+]
+
+
+def _build_pitcher_start_outcomes(raw_statcast: pd.DataFrame, target_date: date | None = None) -> pd.DataFrame:
+    """Build starter-level outcomes directly from Statcast pitch rows."""
+    required = {"game_date", "game_year", "game_pk", "fielding_team", "pitcher", "at_bat_number", "pitch_number", "events"}
+    if raw_statcast.empty or not required.issubset(raw_statcast.columns):
+        return pd.DataFrame(columns=PITCHER_START_OUTCOME_COLUMNS)
+
+    work = raw_statcast.copy()
+    work["game_date"] = pd.to_datetime(work["game_date"], errors="coerce")
+    work["game_year"] = pd.to_numeric(work["game_year"], errors="coerce")
+    work["game_pk"] = pd.to_numeric(work["game_pk"], errors="coerce")
+    work["pitcher"] = pd.to_numeric(work["pitcher"], errors="coerce")
+    work["pitch_number"] = pd.to_numeric(work["pitch_number"], errors="coerce")
+    work["at_bat_number"] = pd.to_numeric(work["at_bat_number"], errors="coerce")
+    if "pitcher_name" not in work.columns:
+        work["pitcher_name"] = work.get("player_name", pd.Series(pd.NA, index=work.index))
+    work = work.loc[
+        work["game_date"].notna()
+        & work["game_pk"].notna()
+        & work["fielding_team"].notna()
+        & work["pitcher"].notna()
+        & work["at_bat_number"].notna()
+    ].copy()
+    if target_date is not None:
+        work = work.loc[work["game_date"].dt.date < target_date].copy()
+    if work.empty:
+        return pd.DataFrame(columns=PITCHER_START_OUTCOME_COLUMNS)
+
+    work["pitcher"] = work["pitcher"].astype(int)
+    work["game_pk"] = work["game_pk"].astype(int)
+    work["fielding_team"] = work["fielding_team"].astype(str)
+    work["_event_order"] = range(len(work))
+    ordered = work.sort_values(["game_date", "game_pk", "fielding_team", "at_bat_number", "pitch_number", "_event_order"], na_position="last")
+    starters = (
+        ordered.drop_duplicates(["game_pk", "fielding_team"], keep="first")
+        [["game_pk", "fielding_team", "pitcher"]]
+        .rename(columns={"pitcher": "starter_pitcher"})
+    )
+    starter_rows = work.merge(starters, on=["game_pk", "fielding_team"], how="inner")
+    starter_rows = starter_rows.loc[starter_rows["pitcher"].eq(starter_rows["starter_pitcher"])].copy()
+    if starter_rows.empty:
+        return pd.DataFrame(columns=PITCHER_START_OUTCOME_COLUMNS)
+
+    pa_events = (
+        starter_rows.sort_values(["game_pk", "fielding_team", "pitcher", "at_bat_number", "pitch_number", "_event_order"], na_position="last")
+        .groupby(["game_pk", "fielding_team", "pitcher", "at_bat_number"], as_index=False)
+        .tail(1)
+        .copy()
+    )
+    event_text = pa_events["events"].fillna("").astype(str).str.lower()
+    pa_events["is_walk"] = event_text.isin({"walk", "intent_walk", "intentional_walk"}).astype(int)
+    pa_events["is_strikeout"] = event_text.isin({"strikeout", "strikeout_double_play"}).astype(int)
+
+    pitch_counts = (
+        starter_rows.groupby(["game_pk", "fielding_team", "pitcher"], as_index=False)
+        .size()
+        .rename(columns={"size": "pitch_count"})
+    )
+    names = (
+        starter_rows.sort_values(["game_date", "game_pk", "fielding_team", "pitcher", "at_bat_number", "pitch_number"], na_position="last")
+        .groupby(["game_pk", "fielding_team", "pitcher"], as_index=False)
+        .agg(
+            game_date=("game_date", "first"),
+            game_year=("game_year", "first"),
+            pitcher_name=("pitcher_name", lambda s: s.dropna().astype(str).iloc[0] if s.notna().any() else pd.NA),
+        )
+    )
+    outcomes = (
+        pa_events.groupby(["game_pk", "fielding_team", "pitcher"], as_index=False)
+        .agg(
+            batters_faced=("at_bat_number", "nunique"),
+            strikeouts=("is_strikeout", "sum"),
+            walks=("is_walk", "sum"),
+        )
+        .merge(pitch_counts, on=["game_pk", "fielding_team", "pitcher"], how="left")
+        .merge(names, on=["game_pk", "fielding_team", "pitcher"], how="left")
+    )
+    outcomes = outcomes.rename(columns={"fielding_team": "team", "pitcher": "pitcher_id"})
+    outcomes["slate_date"] = outcomes["game_date"].dt.date
+    outcomes["game_date"] = outcomes["game_date"].dt.date
+    outcomes["game_year"] = pd.to_numeric(outcomes["game_year"], errors="coerce").astype("Int64")
+    outcomes["started"] = True
+    for column in ["batters_faced", "pitch_count", "strikeouts", "walks"]:
+        outcomes[column] = pd.to_numeric(outcomes[column], errors="coerce").fillna(0).astype(int)
+    return outcomes.reindex(columns=PITCHER_START_OUTCOME_COLUMNS).sort_values(["pitcher_id", "game_date", "game_pk"]).reset_index(drop=True)
+
+
+def _filter_pitcher_start_outcomes_for_slate(
+    pitcher_start_outcomes: pd.DataFrame,
+    schedule: list[dict],
+    target_date: date,
+    n_starts: int = 30,
+) -> pd.DataFrame:
+    if pitcher_start_outcomes.empty or not schedule:
+        return pd.DataFrame(columns=PITCHER_START_OUTCOME_COLUMNS)
+    probable_ids: set[int] = set()
+    for game in schedule:
+        for pid in (game.get("away_probable_pitcher_id"), game.get("home_probable_pitcher_id")):
+            try:
+                if pid is not None and pd.notna(pid):
+                    probable_ids.add(int(pid))
+            except (TypeError, ValueError):
+                continue
+    if not probable_ids:
+        return pd.DataFrame(columns=PITCHER_START_OUTCOME_COLUMNS)
+    work = pitcher_start_outcomes.copy()
+    work["pitcher_id"] = pd.to_numeric(work["pitcher_id"], errors="coerce")
+    work["game_date"] = pd.to_datetime(work["game_date"], errors="coerce")
+    work = work.loc[work["pitcher_id"].isin(probable_ids) & work["game_date"].dt.date.lt(target_date)].copy()
+    if work.empty:
+        return pd.DataFrame(columns=PITCHER_START_OUTCOME_COLUMNS)
+    work = work.sort_values(["pitcher_id", "game_date", "game_pk"], ascending=[True, False, False], na_position="last")
+    work = work.groupby("pitcher_id", group_keys=False).head(n_starts)
+    work["game_date"] = work["game_date"].dt.date
+    if "slate_date" in work.columns:
+        work["slate_date"] = pd.to_datetime(work["slate_date"], errors="coerce").dt.date
+    return work.reindex(columns=PITCHER_START_OUTCOME_COLUMNS).reset_index(drop=True)
+
+
 def _normal_cdf(value: float) -> float:
     return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
 
@@ -1576,6 +1710,7 @@ def _save_daily_files(
     pitcher_family_zone_context: pd.DataFrame,
     pitcher_movement_arsenal: pd.DataFrame,
     hitter_pitcher_exclusions: pd.DataFrame,
+    pitcher_start_outcomes: pd.DataFrame,
     pitch_shape_diagnostics: pd.DataFrame,
     tracking_health: pd.DataFrame,
 ) -> None:
@@ -1616,6 +1751,12 @@ def _save_daily_files(
     tracking_health.to_parquet(target_dir / "tracking_health.parquet", index=False)
     hitter_metrics.to_parquet(target_dir / "daily_hitter_metrics.parquet", index=False)
     hitter_pitcher_exclusions.to_parquet(target_dir / "hitter_pitcher_exclusions.parquet", index=False)
+    strikeouts_dir = target_dir / "strikeouts"
+    strikeouts_dir.mkdir(parents=True, exist_ok=True)
+    _filter_pitcher_start_outcomes_for_slate(pitcher_start_outcomes, schedule, context.target_date).to_parquet(
+        strikeouts_dir / "pitcher_start_outcomes.parquet",
+        index=False,
+    )
     metadata = {
         "build_timestamp_utc": datetime.now(UTC).isoformat(),
         "target_date": context.target_date.isoformat(),
@@ -1979,6 +2120,7 @@ def _write_reusable_artifacts(
     pitcher_family_zone_context: pd.DataFrame,
     pitcher_movement_arsenal: pd.DataFrame,
     hitter_pitcher_exclusions: pd.DataFrame,
+    pitcher_start_outcomes: pd.DataFrame,
 ) -> None:
     hitter_metrics.to_parquet(config.reusable_dir / "hitter_metrics.parquet", index=False)
     pitcher_metrics.to_parquet(config.reusable_dir / "pitcher_metrics.parquet", index=False)
@@ -1994,6 +2136,7 @@ def _write_reusable_artifacts(
     pitcher_family_zone_context.to_parquet(config.reusable_dir / "pitcher_family_zone_context.parquet", index=False)
     pitcher_movement_arsenal.to_parquet(config.reusable_dir / "pitcher_movement_arsenal.parquet", index=False)
     hitter_pitcher_exclusions.to_parquet(config.reusable_dir / "hitter_pitcher_exclusions.parquet", index=False)
+    pitcher_start_outcomes.to_parquet(config.reusable_dir / "pitcher_start_outcomes.parquet", index=False)
 
 
 def _pitcher_lookup(pitcher_metrics: pd.DataFrame) -> dict[int, dict[str, object]]:
@@ -2742,6 +2885,7 @@ def run_build(
     if refresh_reusable_artifacts:
         reusable_start = datetime.now(UTC)
         _progress("write reusable artifacts", 2, 8, build_start)
+        pitcher_start_outcomes = _build_pitcher_start_outcomes(prepared.raw_statcast)
         _write_duckdb(
             context.config,
             prepared.hitter_metrics,
@@ -2775,9 +2919,12 @@ def run_build(
             prepared.pitcher_family_zone_context,
             prepared.pitcher_movement_arsenal,
             prepared.hitter_pitcher_exclusions,
+            pitcher_start_outcomes,
         )
         timings["reusable_artifacts"] = _elapsed_seconds(reusable_start)
         print(f"[timing] reusable_artifacts={timings['reusable_artifacts']:.2f}s", flush=True)
+    else:
+        pitcher_start_outcomes = _build_pitcher_start_outcomes(prepared.raw_statcast)
     daily_context_start = datetime.now(UTC)
     _progress("fetch schedule, rosters, and lineups", 3, 8, build_start)
     schedule = fetch_schedule(context.target_date)
@@ -2921,6 +3068,7 @@ def run_build(
         prepared.pitcher_family_zone_context,
         prepared.pitcher_movement_arsenal,
         prepared.hitter_pitcher_exclusions,
+        pitcher_start_outcomes,
         pitch_shape_diagnostics,
         tracking_health,
     )

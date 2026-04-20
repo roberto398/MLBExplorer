@@ -1,7 +1,17 @@
+from datetime import date, timedelta
+
 import pandas as pd
 
 from mlb_dashboard.config import AppConfig, DEFAULT_RECENT_WINDOWS, DEFAULT_SPLITS
-from mlb_dashboard.build import BuildContext, _aggregate_hitter_metrics, _build_hitter_hr_form, _save_per_game_files, _save_top_slate_board_files
+from mlb_dashboard.build import (
+    BuildContext,
+    _aggregate_hitter_metrics,
+    _build_hitter_hr_form,
+    _build_pitcher_start_outcomes,
+    _filter_pitcher_start_outcomes_for_slate,
+    _save_per_game_files,
+    _save_top_slate_board_files,
+)
 from mlb_dashboard.dashboard_views import BEST_MATCHUP_COLUMNS, HITTER_PRESETS, add_hitter_matchup_score, build_slate_summary_best_matchups, build_slate_summary_matchup_overview, filter_excluded_pitchers_from_hitter_pool, normalize_series
 from mlb_dashboard.local_store import (
     compute_hitter_rolling,
@@ -236,6 +246,63 @@ def test_hitter_iso_is_aggregated_from_extra_bases_per_at_bat():
     metrics = _aggregate_hitter_metrics(add_metric_flags(frame), "unweighted", {2026: 1.0})
 
     assert metrics.loc[0, "iso"] == 1.0
+
+
+def test_pitcher_start_outcomes_use_first_pitcher_and_aggregate_starter_rows():
+    frame = pd.DataFrame(
+        [
+            # Away offense, home fielding starter 10 faces two batters and throws three pitches.
+            {"game_date": "2026-04-10", "game_year": 2026, "game_pk": 1, "fielding_team": "HOM", "pitcher": 10, "pitcher_name": "Home Starter", "at_bat_number": 1, "pitch_number": 1, "events": ""},
+            {"game_date": "2026-04-10", "game_year": 2026, "game_pk": 1, "fielding_team": "HOM", "pitcher": 10, "pitcher_name": "Home Starter", "at_bat_number": 1, "pitch_number": 2, "events": "strikeout"},
+            {"game_date": "2026-04-10", "game_year": 2026, "game_pk": 1, "fielding_team": "HOM", "pitcher": 10, "pitcher_name": "Home Starter", "at_bat_number": 2, "pitch_number": 1, "events": "walk"},
+            {"game_date": "2026-04-10", "game_year": 2026, "game_pk": 1, "fielding_team": "HOM", "pitcher": 11, "pitcher_name": "Home Reliever", "at_bat_number": 3, "pitch_number": 1, "events": "field_out"},
+            # Home offense, away fielding starter 20 is a separate starter for the same game.
+            {"game_date": "2026-04-10", "game_year": 2026, "game_pk": 1, "fielding_team": "AWY", "pitcher": 20, "pitcher_name": "Away Starter", "at_bat_number": 1, "pitch_number": 1, "events": "field_out"},
+        ]
+    )
+
+    outcomes = _build_pitcher_start_outcomes(frame, target_date=date(2026, 4, 11))
+
+    home = outcomes.loc[outcomes["pitcher_id"].eq(10)].iloc[0]
+    assert set(outcomes["pitcher_id"]) == {10, 20}
+    assert 11 not in set(outcomes["pitcher_id"])
+    assert home["pitch_count"] == 3
+    assert home["batters_faced"] == 2
+    assert home["strikeouts"] == 1
+    assert home["walks"] == 1
+    assert bool(home["started"])
+
+
+def test_pitcher_start_outcomes_exclude_current_slate_and_filter_last_30():
+    rows = []
+    for idx in range(35):
+        game_date = date(2026, 3, 1) + timedelta(days=idx)
+        rows.append(
+            {
+                "slate_date": game_date,
+                "game_date": game_date,
+                "game_year": 2026,
+                "game_pk": idx,
+                "team": "AAA",
+                "pitcher_id": 10,
+                "pitcher_name": "Starter",
+                "started": True,
+                "batters_faced": 20,
+                "pitch_count": 80 + idx,
+                "strikeouts": 5,
+                "walks": 2,
+            }
+        )
+    rows.append({**rows[-1], "game_date": date(2026, 4, 5), "slate_date": date(2026, 4, 5), "game_pk": 999, "pitch_count": 120})
+    outcomes = pd.DataFrame(rows)
+    schedule = [{"away_probable_pitcher_id": 10, "home_probable_pitcher_id": 99}]
+
+    filtered = _filter_pitcher_start_outcomes_for_slate(outcomes, schedule, date(2026, 4, 5), n_starts=30)
+
+    assert len(filtered) == 30
+    assert filtered["pitcher_id"].eq(10).all()
+    assert pd.to_datetime(filtered["game_date"]).dt.date.max() < date(2026, 4, 5)
+    assert 120 not in set(filtered["pitch_count"])
 
 
 def test_hr_form_columns_follow_zone_fit_in_hitter_tables():

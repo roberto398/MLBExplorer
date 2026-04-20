@@ -1364,7 +1364,7 @@ def _build_pitcher_export_sections(
     return export_sections
 
 
-def main() -> None:
+def render_matchups_page() -> None:
     st.set_page_config(page_title="Kasper", page_icon=page_icon_path(), layout="wide")
     apply_branding_head()
     render_kasper_header()
@@ -1872,3 +1872,26 @@ def _render_local_selected_game_area(
                     export_options=export_options,
                 )
         st.divider()
+
+
+def main() -> None:
+    pages = {
+        "All User Pages": [
+            st.Page(render_matchups_page, title="Kasper Matchups", url_path="kasper-matchups", default=True),
+            st.Page("pages/1_Exit_Velo_Log.py", title="Exit Velo Log", url_path="exit-velo-log"),
+            st.Page("pages/1_Weather.py", title="Weather", url_path="weather"),
+        ],
+        "Admin Pages": [
+            st.Page("pages/2_Props_Board.py", title="Props Board", url_path="props-board"),
+            st.Page("pages/3_Player_Analysis.py", title="Player Analysis", url_path="player-analysis"),
+            st.Page("pages/4_Backtesting.py", title="Backtesting", url_path="backtesting"),
+            st.Page("pages/5_Strikeouts.py", title="Strikeouts", url_path="strikeouts"),
+            st.Page("pages/6_Bio_Mechanics.py", title="Bio Mechanics", url_path="bio-mechanics"),
+            st.Page("pages/7_Stolen_Bases.py", title="Stolen Bases", url_path="stolen-bases"),
+        ],
+    }
+    st.navigation(pages).run()
+
+
+if __name__ == "__main__":
+    main()

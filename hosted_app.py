@@ -4,9 +4,9 @@ import streamlit as st
 
 
 def _render_matchups() -> None:
-    from mlb_dashboard.hosted_app import main
+    from mlb_dashboard.hosted_app import render_matchups_page
 
-    main()
+    render_matchups_page()
 
 
 def main() -> None:

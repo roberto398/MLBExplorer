@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from mlb_dashboard.branding import apply_sidebar_nav_styles
+
 
 def _render_matchups() -> None:
     from mlb_dashboard.local_app import render_matchups_page
@@ -10,6 +12,7 @@ def _render_matchups() -> None:
 
 
 def main() -> None:
+    apply_sidebar_nav_styles()
     pages = {
         "All User Pages": [
             st.Page(_render_matchups, title="Kasper Matchups", url_path="kasper-matchups", default=True),

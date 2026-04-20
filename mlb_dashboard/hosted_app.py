@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as st_components
 
-from .branding import apply_branding_head, page_icon_path, render_kasper_header
+from .branding import apply_branding_head, apply_sidebar_nav_styles, page_icon_path, render_kasper_header
 from .dashboard_views import (
     ARSENAL_COLUMNS,
     BATTER_SIDE_LABELS,
@@ -1704,6 +1704,7 @@ def _render_hosted_selected_game_area(
 
 
 def main() -> None:
+    apply_sidebar_nav_styles()
     pages = {
         "All User Pages": [
             st.Page(render_matchups_page, title="Kasper Matchups", url_path="kasper-matchups", default=True),

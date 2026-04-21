@@ -313,7 +313,7 @@ def _so_slate_post_styler(
     )
     _max_min_highlight(
         original_frame, styles,
-        higher_best={"Proj K", "Proj BF", "Avg Pitches", "K Rate", "Lineup K%", "Blend K%", "Mix Whiff", "W. Starts"},
+        higher_best={"Proj K", "Proj BF", "Avg Pitches", "K Rate", "Matchup K%", "Blend K%", "Mix Whiff", "W. Starts"},
         lower_best={"Proj BB", "BB Rate", "P/PA"},
     )
     return styles
@@ -328,7 +328,7 @@ def _so_matchup_post_styler(
     _bar_overlay("K Prob", original_frame, styles)
     _max_min_highlight(
         original_frame, styles,
-        higher_best={"SwStr%", "Whiff Idx", "Mix Fit", "K Prob"},
+        higher_best={"K%", "Mix Whiff", "Family Fit", "Zone Fit", "Matchup", "K Prob"},
         lower_best=set(),
     )
     return styles
@@ -363,7 +363,7 @@ def _render_slate_summary(projections: pd.DataFrame) -> None:
         "avg_pitch_count": "Avg Pitches",
         "avg_p_per_bf": "P/PA",
         "pitcher_k_rate": "K Rate",
-        "lineup_k_rate": "Lineup K%",
+        "lineup_k_rate": "Matchup K%",
         "blended_k_rate": "Blend K%",
         "pitcher_bb_rate": "BB Rate",
         "pitcher_mix_whiff": "Mix Whiff",
@@ -385,8 +385,8 @@ def _render_slate_summary(projections: pd.DataFrame) -> None:
             "Proj K",       # more projected Ks = higher ceiling
             "Proj BF",      # more batters faced = more K opportunities
             "Avg Pitches",  # deeper outings = more K chances
-            "K Rate",       # pitcher historical K rate
-            "Lineup K%",    # opposing lineup vulnerability
+            "K Rate",       # pitcher core K rate from SwStr/Ball/CSW/PutAway
+            "Matchup K%",   # pitch-mix + zone-aware opponent matchup
             "Blend K%",     # blended final K rate
             "Mix Whiff",    # pitch-mix weighted whiff rate
             "W. Starts",    # more starts = higher confidence
@@ -443,8 +443,8 @@ def _render_projection_card(row: dict) -> None:
     lk_rate = row.get("lineup_k_rate", 0)
     mix_whiff = row.get("pitcher_mix_whiff", 0)
     st.markdown(
-        f"Pitcher K rate: **{pk_rate:.1%}** | "
-        f"Lineup K rate: **{lk_rate:.1%}** | "
+        f"Pitcher core K rate: **{pk_rate:.1%}** | "
+        f"Matchup K rate: **{lk_rate:.1%}** | "
         f"Mix whiff: **{mix_whiff:.1%}**"
     )
 
@@ -495,16 +495,18 @@ def _render_matchup_breakdown(pitcher_row: dict, hitter_k_probs: list[dict]) -> 
     display = df.rename(columns={
         "hitter_name": "Hitter",
         "bats": "Bats",
-        "swstr_pct": "SwStr%",
-        "swstr_scale": "Whiff Idx",
-        "family_vuln": "Mix Fit",
+        "strikeout_rate": "K%",
+        "mix_whiff": "Mix Whiff",
+        "family_vuln": "Family Fit",
+        "zone_whiff": "Zone Fit",
+        "matchup_scalar": "Matchup",
         "k_prob": "K Prob",
     })
     # Insert Team logo column after Hitter
     if "team" in display.columns:
         display.insert(1, "Team", display.pop("team").map(lambda t: team_logo_data_uri(str(t)) or str(t)))
     # Keep numeric so _build_lightweight_grid_payload can color them
-    for col in ["SwStr%", "K Prob", "Whiff Idx", "Mix Fit"]:
+    for col in ["K%", "Mix Whiff", "Family Fit", "Zone Fit", "Matchup", "K Prob"]:
         if col in display.columns:
             display[col] = pd.to_numeric(display[col], errors="coerce")
     render_metric_grid(
@@ -512,7 +514,7 @@ def _render_matchup_breakdown(pitcher_row: dict, hitter_k_probs: list[dict]) -> 
         key=f"so-matchup-{pitcher_row.get('pitcher_id', 0)}",
         height=320,
         use_lightweight=True,
-        higher_is_better={"SwStr%", "Whiff Idx", "Mix Fit", "K Prob"},
+        higher_is_better={"K%", "Mix Whiff", "Family Fit", "Zone Fit", "Matchup", "K Prob"},
         post_styler=_so_matchup_post_styler,
     )
 

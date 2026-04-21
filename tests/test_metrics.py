@@ -26,6 +26,11 @@ from mlb_dashboard.local_store import (
     read_hitter_snapshots_for_date,
 )
 from mlb_dashboard.metrics import add_metric_flags, is_barrel
+from mlb_dashboard.strikeout_projections import (
+    compute_pitch_mix_lineup_k_rate,
+    compute_pitcher_core_k_rate,
+    compute_pitcher_projection,
+)
 from mlb_dashboard.ui_components import SLATE_SUMMARY_SELECTION, resolve_logo_game_selection
 
 
@@ -318,6 +323,263 @@ def test_hr_form_columns_follow_zone_fit_in_hitter_tables():
     assert BEST_MATCHUP_COLUMNS.index("hr_form") == BEST_MATCHUP_COLUMNS.index("zone_fit_score") + 1
     assert BEST_MATCHUP_COLUMNS.index("khr_score") == BEST_MATCHUP_COLUMNS.index("hr_form") + 1
     assert BEST_MATCHUP_COLUMNS.index("iso") == BEST_MATCHUP_COLUMNS.index("xwoba") - 1
+
+
+def test_hitter_aggregate_includes_strikeout_rate_from_final_pa_events():
+    frame = pd.DataFrame(
+        [
+            {
+                "game_year": 2026,
+                "batter": 1,
+                "stand": "R",
+                "team": "AAA",
+                "events": "strikeout",
+                "bb_type": None,
+                "estimated_woba_using_speedangle": pd.NA,
+                "description": "swinging_strike",
+                "launch_speed": pd.NA,
+                "launch_angle": pd.NA,
+                "hc_x": pd.NA,
+                "at_bat_number": 1,
+                "pitch_number": 3,
+            },
+            {
+                "game_year": 2026,
+                "batter": 1,
+                "stand": "R",
+                "team": "AAA",
+                "events": "field_out",
+                "bb_type": "ground_ball",
+                "estimated_woba_using_speedangle": 0.1,
+                "description": "hit_into_play",
+                "launch_speed": 85.0,
+                "launch_angle": -2.0,
+                "hc_x": 90.0,
+                "at_bat_number": 2,
+                "pitch_number": 2,
+            },
+            {
+                "game_year": 2026,
+                "batter": 1,
+                "stand": "R",
+                "team": "AAA",
+                "events": "walk",
+                "bb_type": None,
+                "estimated_woba_using_speedangle": pd.NA,
+                "description": "ball",
+                "launch_speed": pd.NA,
+                "launch_angle": pd.NA,
+                "hc_x": pd.NA,
+                "at_bat_number": 3,
+                "pitch_number": 4,
+            },
+        ]
+    )
+    frame["release_speed"] = 95.0
+    frame["release_spin_rate"] = 2300.0
+    frame["balls"] = 0
+    frame["strikes"] = 0
+
+    metrics = _aggregate_hitter_metrics(add_metric_flags(frame), "unweighted", {2026: 1.0})
+
+    assert round(metrics.loc[0, "strikeout_rate"], 3) == round(1 / 3, 3)
+
+
+def test_pitcher_core_k_rate_weights_swstr_more_than_csw_and_penalizes_ball_pct():
+    base = pd.Series(
+        {
+            "swstr_pct": 0.11,
+            "ball_pct": 0.34,
+            "csw_pct": 0.29,
+            "putaway_pct": 0.20,
+        }
+    )
+
+    base_rate = compute_pitcher_core_k_rate(base)
+    higher_swstr_row = base.copy()
+    higher_swstr_row["swstr_pct"] = 0.14
+    higher_csw_row = base.copy()
+    higher_csw_row["csw_pct"] = 0.32
+    worse_control_row = base.copy()
+    worse_control_row["ball_pct"] = 0.39
+    higher_swstr = compute_pitcher_core_k_rate(higher_swstr_row)
+    higher_csw = compute_pitcher_core_k_rate(higher_csw_row)
+    worse_control = compute_pitcher_core_k_rate(worse_control_row)
+
+    assert 0.12 <= base_rate <= 0.38
+    assert higher_swstr > base_rate
+    assert higher_csw > base_rate
+    assert (higher_swstr - base_rate) > (higher_csw - base_rate)
+    assert worse_control < base_rate
+
+
+def test_pitch_mix_lineup_k_rate_uses_hitter_baseline_and_family_zone_context():
+    opp_hitters = pd.DataFrame(
+        [
+            {"batter_id": 1, "hitter_name": "Whiff Guy", "team": "AAA", "bats": "R", "strikeout_rate": 0.30},
+            {"batter_id": 2, "hitter_name": "Contact Guy", "team": "AAA", "bats": "L", "strikeout_rate": 0.16},
+        ]
+    )
+    pitcher_fzc = pd.DataFrame(
+        [
+            {
+                "pitcher_id": 99,
+                "pitch_family": "fastball",
+                "zone_bucket": "heart",
+                "usage_rate_overall": 0.6,
+                "whiff_rate": 0.15,
+                "called_strike_rate": 0.18,
+            },
+            {
+                "pitcher_id": 99,
+                "pitch_family": "breaking",
+                "zone_bucket": "shadow",
+                "usage_rate_overall": 0.4,
+                "whiff_rate": 0.22,
+                "called_strike_rate": 0.16,
+            },
+        ]
+    )
+    batter_fzp = pd.DataFrame(
+        [
+            {
+                "batter_id": 1,
+                "pitcher_hand_key": "vs_rhp",
+                "pitch_family": "fastball",
+                "zone_bucket": "heart",
+                "weighted_sample_size": 80,
+                "xwoba": 0.260,
+            },
+            {
+                "batter_id": 1,
+                "pitcher_hand_key": "vs_rhp",
+                "pitch_family": "breaking",
+                "zone_bucket": "shadow",
+                "weighted_sample_size": 65,
+                "xwoba": 0.240,
+            },
+            {
+                "batter_id": 2,
+                "pitcher_hand_key": "vs_rhp",
+                "pitch_family": "fastball",
+                "zone_bucket": "heart",
+                "weighted_sample_size": 80,
+                "xwoba": 0.360,
+            },
+            {
+                "batter_id": 2,
+                "pitcher_hand_key": "vs_rhp",
+                "pitch_family": "breaking",
+                "zone_bucket": "shadow",
+                "weighted_sample_size": 65,
+                "xwoba": 0.345,
+            },
+        ]
+    )
+
+    matchup_rate, hitter_detail = compute_pitch_mix_lineup_k_rate(
+        99,
+        "R",
+        opp_hitters,
+        pitcher_fzc,
+        batter_fzp,
+        pitcher_mix_whiff=0.18,
+    )
+
+    assert 0.12 <= matchup_rate <= 0.40
+    assert len(hitter_detail) == 2
+    whiff_guy = next(row for row in hitter_detail if row["hitter_name"] == "Whiff Guy")
+    contact_guy = next(row for row in hitter_detail if row["hitter_name"] == "Contact Guy")
+    assert whiff_guy["k_prob"] > contact_guy["k_prob"]
+    assert whiff_guy["matchup_scalar"] > contact_guy["matchup_scalar"]
+
+
+def test_pitcher_projection_uses_pitcher_core_not_historical_zero_k_rows():
+    pitcher_row = pd.Series(
+        {
+            "pitcher_id": 44,
+            "pitcher_name": "Ace",
+            "team": "AAA",
+            "p_throws": "R",
+            "swstr_pct": 0.15,
+            "ball_pct": 0.31,
+            "csw_pct": 0.32,
+            "putaway_pct": 0.24,
+        }
+    )
+    outcomes = pd.DataFrame(
+        [
+            {
+                "pitcher_id": 44,
+                "batters_faced": 25,
+                "pitch_count": 95,
+                "strikeouts": 0,
+                "walks": 1,
+                "slate_date": pd.Timestamp("2026-04-10"),
+            },
+            {
+                "pitcher_id": 44,
+                "batters_faced": 24,
+                "pitch_count": 92,
+                "strikeouts": 0,
+                "walks": 1,
+                "slate_date": pd.Timestamp("2026-04-15"),
+            },
+            {
+                "pitcher_id": 44,
+                "batters_faced": 23,
+                "pitch_count": 90,
+                "strikeouts": 0,
+                "walks": 2,
+                "slate_date": pd.Timestamp("2026-04-18"),
+            },
+        ]
+    )
+    opp_hitters = pd.DataFrame(
+        [
+            {"batter_id": 1, "hitter_name": "H1", "team": "BBB", "bats": "R", "strikeout_rate": 0.24},
+            {"batter_id": 2, "hitter_name": "H2", "team": "BBB", "bats": "L", "strikeout_rate": 0.20},
+        ]
+    )
+    pitcher_fzc = pd.DataFrame(
+        [
+            {
+                "pitcher_id": 44,
+                "pitch_family": "fastball",
+                "zone_bucket": "heart",
+                "usage_rate_overall": 1.0,
+                "whiff_rate": 0.17,
+                "called_strike_rate": 0.18,
+            }
+        ]
+    )
+    batter_fzp = pd.DataFrame(
+        [
+            {
+                "batter_id": 1,
+                "pitcher_hand_key": "vs_rhp",
+                "pitch_family": "fastball",
+                "zone_bucket": "heart",
+                "weighted_sample_size": 40,
+                "xwoba": 0.290,
+            },
+            {
+                "batter_id": 2,
+                "pitcher_hand_key": "vs_rhp",
+                "pitch_family": "fastball",
+                "zone_bucket": "heart",
+                "weighted_sample_size": 40,
+                "xwoba": 0.330,
+            },
+        ]
+    )
+
+    projection = compute_pitcher_projection(pitcher_row, outcomes, opp_hitters, pitcher_fzc, batter_fzp)
+
+    assert projection.avg_pitch_count > 0
+    assert projection.projected_bf > 0
+    assert projection.pitcher_k_rate > 0.20
+    assert projection.blended_k_rate >= projection.lineup_k_rate
 
 
 def test_slate_summary_best_matchups_keeps_top_three_per_game():

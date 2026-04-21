@@ -559,6 +559,15 @@ def _aggregate_hitter_metrics(frame: pd.DataFrame, weighted_mode: str, year_weig
         extra_base_values = event_text.map({"double": 1, "triple": 2, "home_run": 3}).fillna(0.0)
         at_bat_weight_sum = float((at_bat_mask.astype(int) * group["metric_weight"]).sum())
         iso = float((extra_base_values * group["metric_weight"]).sum()) / at_bat_weight_sum if at_bat_weight_sum > 0 else float("nan")
+        pa_events = (
+            group.sort_values(["at_bat_number", "pitch_number"], na_position="last")
+            .groupby(["at_bat_number"], as_index=False)
+            .tail(1)
+            .copy()
+        )
+        pa_event_text = pa_events.get("events", pd.Series(index=pa_events.index, dtype="object")).fillna("").astype(str).str.lower()
+        pa_weight_sum = float(pa_events["metric_weight"].sum())
+        strikeout_weight_sum = float((pa_event_text.isin({"strikeout", "strikeout_double_play"}).astype(int) * pa_events["metric_weight"]).sum())
         rows.append(
             {
                 "team": latest_team,
@@ -570,6 +579,7 @@ def _aggregate_hitter_metrics(frame: pd.DataFrame, weighted_mode: str, year_weig
                 "iso": iso,
                 "xwoba": _weighted_sum(group, "xwoba_value", group.index) / max(_weighted_denominator(group, "xwoba_value", group.index), 1e-9),
                 "xwoba_con": _weighted_sum(group.loc[group["is_batted_ball"]], "xwoba_value", group.loc[group["is_batted_ball"]].index) / max(float(group.loc[group["is_batted_ball"], "metric_weight"].sum()), 1e-9),
+                "strikeout_rate": strikeout_weight_sum / max(pa_weight_sum, 1e-9),
                 "swstr_pct": float((group["is_swinging_strike"].astype(int) * group["metric_weight"]).sum()) / max(pitch_weight_sum, 1e-9),
                 "barrel_bbe_pct": barrel_weight_sum / max(tracked_bbe_weight_sum, 1e-9),
                 "barrel_bip_pct": barrel_weight_sum / max(bip_weight_sum, 1e-9),
@@ -1891,6 +1901,7 @@ def _build_top_slate_hitter_board(snapshots: pd.DataFrame) -> pd.DataFrame:
         "iso",
         "xwoba",
         "xwoba_con",
+        "strikeout_rate",
         "swstr_pct",
         "pulled_barrel_pct",
         "barrel_bip_pct",
@@ -2286,6 +2297,7 @@ def _build_hitter_tracking_snapshots(
                                     "iso",
                                     "xwoba",
                                     "xwoba_con",
+                                    "strikeout_rate",
                                     "swstr_pct",
                                     "pulled_barrel_pct",
                                     "barrel_bbe_pct",
